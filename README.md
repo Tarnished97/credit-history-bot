@@ -34,3 +34,7 @@ Telegram-бот на Python для анализа кредитной истор�
 
 - Telegram: [@Tarnished97](https://t.me/Tarnished97)
 - GitHub: [Tarnished97](https://github.com/Tarnished97)
+- ## Скриншоты
+
+![Главное меню](screenshot-1.png)
+![Отчёт по кредитной истории](screenshot-2.png)
