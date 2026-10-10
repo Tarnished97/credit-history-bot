@@ -27,3 +27,10 @@ Telegram-бот на Python для анализа кредитной истор�
 4. Пользователь выбирает банк → получает расчёт платежа
 
 ## Запуск
+
+Перед запуском вставьте свой `BOT_TOKEN`.
+
+## Контакты
+
+- Telegram: [@Tarnished97](https://t.me/Tarnished97)
+- GitHub: [Tarnished97](https://github.com/Tarnished97)
