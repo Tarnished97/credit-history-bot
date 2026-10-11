@@ -14,7 +14,7 @@ import pdfplumber
 # ==============================
 # НАСТРОЙКИ
 # ==============================
-BOT_TOKEN = "Ваш Токен"
+BOT_TOKEN = "8840577896:AAGygFrEWsRptHxu0BJoA7HteoxDmgKWDmU"
 MANAGER_TG = "@Tarnished97"
 
 logging.basicConfig(level=logging.INFO)
@@ -59,19 +59,10 @@ BANK_KEYS = list(BANKS_DATA.keys())
 BANKS_REFINANCE = {
     "Дабрабыт":      {"rate": 22.0,  "max_sum": 50000, "term_months": 60, "docs": "none",   "url": "https://www.dabrabyt.by"},
     "Сбер Банк":     {"rate": 17.65, "max_sum": 55000, "term_months": 84, "docs": "none",   "url": "https://www.sber-bank.by"},
-    "Белагропромбанк": {"rate": 19.1, "max_sum": 35000, "term_months": 84, "docs": "light", "url": "https://www.belagroprombank.com"},
-    "БелВЭБ":        {"rate": 17.96, "max_sum": 100000, "term_months": 84, "docs": "light", "url": "https://www.belveb.by"},
     "РРБ-Банк":      {"rate": 19.1,  "max_sum": 10000, "term_months": 36, "docs": "light", "url": "https://www.rrb.by"},
-    "Альфа-Банк":    {"rate": 18.18, "max_sum": 20000, "term_months": 60, "docs": "light", "url": "https://www.alfabank.by"},
-    "Технобанк":     {"rate": 17.9,  "max_sum": 25000, "term_months": 84, "docs": "light", "url": "https://www.technobank.by"},
     "Статусбанк":    {"rate": 17.0,  "max_sum": 20000, "term_months": 60, "docs": "light", "url": "https://www.statusbank.by"},
-    "Банк Решение":  {"rate": 18.92, "max_sum": 50000, "term_months": 60, "docs": "light", "url": "https://www.solutionbank.by"},
-    "Нео Банк":      {"rate": 18.18, "max_sum": 50000, "term_months": 60, "docs": "light", "url": "https://www.neobank.by"},
-    "Цептер Банк":   {"rate": 16.50, "max_sum": 15000, "term_months": 60, "docs": "light", "url": "https://www.zepterbank.by"},
-    "БНБ-Банк":      {"rate": 17.50, "max_sum": 50000, "term_months": 84, "docs": "light", "url": "https://www.bnb.by"},
-    "Белинвестбанк": {"rate": 18.49, "max_sum": 30000, "term_months": 60, "docs": "light", "url": "https://www.belinvestbank.by"},
-    "Беларусбанк":   {"rate": 17.5,  "max_sum": 35000, "term_months": 84, "docs": "heavy", "url": "https://www.belarusbank.by"},
     "МТБанк":        {"rate": 24.99, "max_sum": 40000, "term_months": 60, "docs": "none",   "url": "https://www.mtbank.by"},
+    "Белинвестбанк": {"rate": 18.49, "max_sum": 30000, "term_months": 60, "docs": "heavy", "url": "https://www.belinvestbank.by"},
 }
 
 # ==============================
@@ -172,20 +163,26 @@ def parse_loans(text: str) -> dict:
         "total_load": 0.0,
     }
 
-    blocks = re.split(r"ДОГОВОР КРЕДИТНОГО ХАРАКТЕРА №", text)
-    for block in blocks[1:]:
-        header = block[:300]
-        is_revolving = "возобновляемой кредитной линии" in header.lower()
+    pattern = r"ДОГОВОР КРЕДИТНОГО ХАРАКТЕРА №\s*([^\s]+)"
+    matches = list(re.finditer(pattern, text))
 
-        # Проверка закрытия
-        idx_end = header.find("Дата прекращения договора")
-        is_closed = False
-        if idx_end != -1:
-            after = header[idx_end:idx_end + 200]
-            if re.search(r"\d{2}\.\d{2}\.\d{4}", after):
-                is_closed = True
+    print(f"\n===== PARSE LOANS DEBUG =====")
+    print(f"Найдено договоров: {len(matches)}")
 
-        # Определяем банк по БИК
+    seen_contracts = set()
+
+    for i, match in enumerate(matches):
+        contract_id = match.group(1).strip()
+        if contract_id in seen_contracts:
+            continue
+        seen_contracts.add(contract_id)
+
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[start:end]
+
+        print(f"\n--- Договор #{contract_id} ---")
+
         bank_codes = {
             "ALFABY2X": "Альфа-Банк",
             "PICCBVY2X": "Приорбанк",
@@ -202,57 +199,100 @@ def parse_loans(text: str) -> dict:
             if code in block:
                 bank_name = name
                 break
+        print(f"  Банк: {bank_name}")
+
+        # Тип договора
+        is_revolving = False
+        idx_type = block.find("Вид кредитной сделки")
+        if idx_type != -1:
+            type_text = block[idx_type:idx_type + 200]
+            type_text_clean = re.sub(r"\s+", " ", type_text).lower()
+            if "с возобновляемой" in type_text_clean:
+                is_revolving = True
+        print(f"  Возобновляемая: {is_revolving}")
+
+        # === ЗАКРЫТИЕ ===
+        # 1) Фраза "Прекращение исполнения" в блоке
+        block_clean = re.sub(r"\s+", " ", block)
+        is_closed = "Прекращение исполнения" in block_clean
+
+        # 2) Первый сырой остаток = 0
+        idx_exec = block.find("Сведения об исполнении обязательств по договору")
+        exec_block = ""
+        if idx_exec != -1:
+            exec_block = block[idx_exec:idx_exec + 3000]
+            raw_numbers = re.findall(r"(\d+[.,]\d+)\s*BYN", exec_block)
+            if raw_numbers:
+                try:
+                    first_raw = float(raw_numbers[0].replace(",", "."))
+                    if first_raw == 0:
+                        is_closed = True
+                except ValueError:
+                    pass
+        print(f"  Закрыт: {is_closed}")
 
         if is_closed:
             result["closed"].append({"bank": bank_name})
             continue
 
-        # Ищем блок исполнения
-        idx_exec = block.find("Сведения об исполнении обязательств по договору")
-        if idx_exec == -1:
-            continue
-        exec_block = block[idx_exec:idx_exec + 2000]
-
-        rows = re.findall(r"(\d+[.,]\d+)\s*BYN", exec_block)
-        if len(rows) < 2:
+        if not exec_block:
+            print(f"  ⚠️ Блок исполнения не найден")
             continue
 
-        try:
-            first_val = float(rows[0].replace(",", "."))
+        # === Остатки ===
+        all_numbers = re.findall(r"(\d+[.,]\d+)\s*BYN", exec_block)
+        meaningful = []
+        for n in all_numbers:
+            try:
+                val = float(n.replace(",", "."))
+                if val >= 100:
+                    meaningful.append(val)
+            except ValueError:
+                continue
 
-            # Находим первое значимое изменение (платёж)
+        print(f"  Числа (после фильтра): {meaningful[:8]}")
+
+        if len(meaningful) < 2:
+            print(f"  ⚠️ Мало данных")
+            continue
+
+        unique_vals = sorted(set(meaningful), reverse=True)
+        if len(unique_vals) >= 2:
+            payment = round(unique_vals[0] - unique_vals[1], 2)
+        else:
             payment = 0
-            for i in range(1, len(rows)):
-                try:
-                    val = float(rows[i].replace(",", "."))
-                    diff = abs(val - first_val)
-                    if diff > 50:
-                        payment = round(diff, 2)
-                        break
-                except ValueError:
-                    continue
 
-            if is_revolving:
-                payment = round(first_val * 0.05, 2)
-                result["revolving"].append({"bank": bank_name, "remainder": first_val, "payment": payment})
-            else:
-                if payment <= 0 or payment > first_val * 0.7:
-                    payment = round(first_val * 0.1, 2)
-                result["classic"].append({"bank": bank_name, "payment": payment, "remainder": first_val})
-        except (ValueError, IndexError):
-            continue
+        current_remainder = meaningful[0]
+
+        print(f"  Остаток: {current_remainder}, Платёж: {payment}")
+
+        if is_revolving:
+            payment = round(current_remainder * 0.05, 2)
+            result["revolving"].append({"bank": bank_name, "remainder": current_remainder, "payment": payment})
+            print(f"  → Овер, платёж 5%: {payment}")
+        else:
+            if payment < 50:
+                payment = round(current_remainder * 0.1, 2)
+                print(f"  ⚠️ Платёж мал, 10%: {payment}")
+            result["classic"].append({"bank": bank_name, "payment": payment, "remainder": current_remainder})
+            print(f"  → Классический, платёж: {payment}")
 
     total = sum(item["payment"] for item in result["classic"])
     total += sum(item["payment"] for item in result["revolving"])
     result["total_load"] = round(total, 2)
 
-    # Поручительства
-    guarantee_blocks = re.split(r"ДОГОВОР ОБЕСПЕЧЕНИЯ №", text)
-    for g_block in guarantee_blocks[1:]:
-        amount_match = re.search(r"(\d+[.,]\d+)\s*BYN\s*\(\d{2}\.\d{2}\.\d{4}\)", g_block[:500])
-        if amount_match:
-            amount = float(amount_match.group(1).replace(",", "."))
-            result["guarantees"].append({"bank": "Банк", "amount": amount})
+    print(f"\n===== ИТОГ =====")
+    print(f"Классические: {len(result['classic'])}")
+    for item in result["classic"]:
+        print(f"  - {item['bank']}: {item['payment']} (остаток {item['remainder']})")
+    print(f"Овердрафты: {len(result['revolving'])}")
+    for item in result["revolving"]:
+        print(f"  - {item['bank']}: {item['payment']} (остаток {item['remainder']})")
+    print(f"Закрытые: {len(result['closed'])}")
+    for item in result["closed"]:
+        print(f"  - {item['bank']}")
+    print(f"Общая нагрузка: {result['total_load']}")
+    print(f"===== END =====\n")
 
     return result
 
@@ -436,7 +476,113 @@ def pluralize_banks(n: int) -> str:
     return "банков"
 
 # ==============================
-# ФИЛЬТРАЦИЯ
+# РЕФИНАНСИРОВАНИЕ
+# ==============================
+def filter_refinance_banks(score_val, anketa, loans):
+    suitable = []
+    for bank_name, info in BANKS_REFINANCE.items():
+        bank_min_score = BANKS_DATA.get(bank_name, {}).get("min_score", "E3")
+        if score_val and score_val > get_score_value(bank_min_score):
+            continue
+
+        if anketa.get("employment") == "self_employed":
+            if bank_name not in HIDDEN_FILTERS["self_employed"]:
+                continue
+
+        if anketa.get("exec_list") == "closed_less":
+            if bank_name not in HIDDEN_FILTERS["loyal_to_exec"]:
+                continue
+
+        if anketa.get("pawnshop") == "open":
+            if bank_name not in HIDDEN_FILTERS["loyal_to_mfo"]:
+                continue
+
+        suitable.append((bank_name, info))
+
+    docs_order = {"none": 0, "light": 1, "heavy": 2}
+    suitable.sort(key=lambda x: docs_order.get(x[1]["docs"], 3))
+    return suitable
+
+def calculate_refinance_amount(loans: dict) -> float:
+    total = sum(item["remainder"] for item in loans["classic"])
+    total += sum(item["remainder"] for item in loans["revolving"])
+    return round(total, 2)
+
+def check_user_situation(anketa, loans, loan_amount):
+    free_level = anketa.get("free_level", 0)
+    load = loans["total_load"]
+
+    if loan_amount:
+        avg_rate = 20
+        months = 60
+        payment = calculate_loan_payment(loan_amount, avg_rate, months, "А")["monthly_payment"]
+    else:
+        payment = 0
+
+    passes = payment <= free_level
+
+    if passes:
+        return "ok"
+    elif load >= 700:
+        return "fork"
+    else:
+        return "reduce"
+
+def build_refinance_report(uid, loans, anketa, score_val):
+    suitable = filter_refinance_banks(score_val, anketa, loans)
+    refinance_sum = calculate_refinance_amount(loans)
+    payment_level = anketa.get("payment_level", 0)
+    free_level = anketa.get("free_level", 0)
+
+    if not suitable:
+        return None, "no_banks"
+
+    shown = suitable[:3]
+
+    report = f"💰 **Рефинансирование**\n\n"
+    report += f"Сумма: **{refinance_sum:.0f} BYN**\n"
+    report += f"Текущая нагрузка: **{loans['total_load']:.0f} BYN/мес**\n\n"
+    report += "**Варианты банков:**\n\n"
+
+    best_new_free = free_level
+    for i, (bank_name, info) in enumerate(shown, 1):
+        result = calculate_loan_payment(refinance_sum, info["rate"], info["term_months"], "А")
+        new_payment = result["monthly_payment"]
+        new_free = payment_level - new_payment
+
+        report += f"**{bank_name}** — {info['rate']}% ({info['term_months'] // 12} лет)\n"
+        report += f"   💵 Платёж: ≈ {new_payment:.0f} BYN/мес\n"
+        report += f"   📉 Новый ПУ: ≈ {new_free:.0f} BYN\n"
+        report += f"   [Сайт банка]({info['url']})\n\n"
+
+        if best_new_free < new_free:
+            best_new_free = new_free
+
+    avg_rate = 20
+    r = avg_rate / 100 / 12
+    n = 60
+    coef = r * (1 + r) ** n / ((1 + r) ** n - 1)
+    max_new_credit = best_new_free / coef if best_new_free > 0 else 0
+
+    report += f"━━━━━━━━━━━━━━━━\n"
+    report += f"💡 После рефинансирования ваш свободный ПУ вырастет.\n"
+    if max_new_credit > 0:
+        report += f"Вы сможете взять новый кредит до **{max_new_credit:.0f} BYN**.\n\n"
+    report += f"📞 _Для детального разбора — свяжитесь с менеджером._"
+
+    return report, "ok"
+
+def build_no_banks_message():
+    return (
+        "💡 **К сожалению, автоматический подбор не нашёл подходящих "
+        "вариантов для рефинансирования.**\n\n"
+        "Есть нюансы, которые можно обсудить лично — "
+        "для корректной подачи заявки свяжитесь с менеджером.\n\n"
+        "📞 _Базового анализа в вашем случае может быть недостаточно._"
+    )
+
+# ==============================
+# ФИЛЬТРАЦИЯ (обычный подбор)
 # ==============================
 def filter_banks(suitable: list, anketa: dict, loans: dict) -> list:
     filtered = list(suitable)
@@ -524,13 +670,17 @@ def get_pawnshop_kb():
         [InlineKeyboardButton(text="Есть открытые", callback_data="pawn_open")],
         [InlineKeyboardButton(text="Есть закрытые", callback_data="pawn_closed")]])
 
-def get_choice_keyboard(has_stop=False):
+def get_choice_keyboard(has_stop=False, with_refinance=False):
     rows = [
         [InlineKeyboardButton(text="📋 Показать список банков", callback_data="show_banks")],
-        [InlineKeyboardButton(text="📄 Уточнить данные", callback_data="clarify_income")],
-        [InlineKeyboardButton(text="💰 Рефинансирование", callback_data="refinance_info")]]
+        [InlineKeyboardButton(text="📄 Уточнить данные", callback_data="clarify_income")]]
+    if with_refinance:
+        rows.append([InlineKeyboardButton(text="💰 Рассчитать рефинансирование", callback_data="calc_refinance")])
+    else:
+        rows.append([InlineKeyboardButton(text="💰 Рефинансирование", callback_data="refinance_info")])
     if has_stop:
         rows.append([InlineKeyboardButton(text="💡 Как улучшить КИ", callback_data="improve_ci")])
+    rows.append([InlineKeyboardButton(text="📞 Связаться с менеджером", url=f"https://t.me/{MANAGER_TG.lstrip('@')}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_income_cert_keyboard():
@@ -846,6 +996,17 @@ async def handle_document(message: types.Message):
     stop_factors = analyze_stop_factors(text)
     loans = parse_loans(text)
 
+    anketa = user_calc.get(uid, {})
+    salary = anketa.get("salary", 0)
+    load = loans["total_load"]
+    kids = anketa.get("kids", 0)
+
+    if salary:
+        load_calc = calculate_financial_load(salary, load, kids)
+        anketa["payment_level"] = load_calc["payment_level"]
+        anketa["free_level"] = load_calc["free_level"]
+        user_calc[uid] = anketa
+
     report = "📊 **Ваш отчёт:**\n\n"
 
     if user_score_str:
@@ -871,7 +1032,6 @@ async def handle_document(message: types.Message):
             for item in loans["revolving"]:
                 report += f"   — {item['bank']}: ≈ {item['payment']:.0f} BYN\n"
 
-    anketa = user_calc.get(uid, {})
     if anketa.get("employment") == "unofficial":
         report += "⚠️ Без официального трудоустройства большинство банков откажут.\n"
     if anketa.get("tenure_3m") is False:
@@ -917,47 +1077,64 @@ async def handle_document(message: types.Message):
         await message.answer(report + "😔 **Нет подходящих банков.**",
                              parse_mode="Markdown", reply_markup=get_main_menu())
     else:
+        loan_amount = anketa.get("loan_amount", 0)
+        situation = check_user_situation(anketa, loans, loan_amount)
+
         cnt = min(len(suitable), 3)
         word = pluralize_banks(cnt)
         anketa_passed = anketa.get("anketa_passed", False)
 
-        if anketa_passed:
-            has_cert = anketa.get("has_cert", False)
-            shown = suitable[:3]
-            short_report = f"🏦 **{cnt} {word} с лучшими условиями:**\n\n"
-            for i, (bank_name, info) in enumerate(shown, 1):
-                type_label = "А" if info['payment_type'] == "А" else "Д"
-                sum_shown = info['sum_with_cert'] if has_cert else info['sum_without_cert']
-                short_report += f"{i}. [{bank_name}]({info['url']}) — {info['rate']}% ({type_label}), {sum_shown}\n"
-            short_report += "\n_А — аннуитет, Д — дифференцированный_"
-            short_report += f"\n{'✅ Со справкой о доходах' if has_cert else '❌ Без справки о доходах'}"
+        await message.answer(report, parse_mode="Markdown")
 
-            bank_buttons = []
-            for bank_name, info in shown:
-                idx = BANK_KEYS.index(bank_name)
-                bank_buttons.append([InlineKeyboardButton(
-                    text=f"💳 {bank_name}", callback_data=f"bank_calc_{idx}")])
-            extra = []
-            if found_stops:
-                extra.append([InlineKeyboardButton(
-                    text="💡 Как улучшить кредитную историю", callback_data="improve_ci")])
-
-            if user_score_val and user_score_val <= 5 and (anketa.get("loan_amount") or 0) < 30000:
-                cta = "\n\n💡 _Если нужна помощь с оформлением — свяжитесь с менеджером._"
-            else:
-                cta = "\n\n📞 _Рекомендуем связаться с менеджером — базового анализа может быть недостаточно._"
-
-            await message.answer(report, parse_mode="Markdown")
+        if situation == "fork":
             await message.answer(
-                short_report + cta, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=bank_buttons + extra + [
-                    [InlineKeyboardButton(text="📞 Связаться с менеджером", url=f"https://t.me/{MANAGER_TG.lstrip('@')}")]]))
-        else:
-            await message.answer(
-                report + f"🏦 **Подобрано {cnt} {word} с лучшими условиями для вас.**\n\n"
-                "Чтобы подобрать точнее, уточните данные 👇",
+                "💡 **С запрошенной суммой список банков сократился.**\n\n"
+                "У вас два пути:\n\n"
+                "1️⃣ Посмотреть банки, которые готовы вас рассмотреть — "
+                "с текущей нагрузкой.\n"
+                "2️⃣ Снизить нагрузку через рефинансирование и расширить "
+                "выбор банков.\n\n"
+                "Что выбираете?",
                 parse_mode="Markdown",
-                reply_markup=get_choice_keyboard(has_stop=bool(found_stops)))
+                reply_markup=get_choice_keyboard(has_stop=bool(found_stops), with_refinance=True))
+        elif situation == "reduce":
+            await message.answer(
+                f"🏦 **{cnt} {word} с лучшими условиями.**\n\n"
+                "💡 Если хотите расширить выбор — рассмотрите рефинансирование.",
+                parse_mode="Markdown",
+                reply_markup=get_choice_keyboard(has_stop=bool(found_stops), with_refinance=True))
+        else:
+            if anketa_passed:
+                has_cert = anketa.get("has_cert", False)
+                shown = suitable[:3]
+                short_report = f"🏦 **{cnt} {word} с лучшими условиями:**\n\n"
+                for i, (bank_name, info) in enumerate(shown, 1):
+                    type_label = "А" if info['payment_type'] == "А" else "Д"
+                    sum_shown = info['sum_with_cert'] if has_cert else info['sum_without_cert']
+                    short_report += f"{i}. [{bank_name}]({info['url']}) — {info['rate']}% ({type_label}), {sum_shown}\n"
+                short_report += "\n_А — аннуитет, Д — дифференцированный_"
+                short_report += f"\n{'✅ Со справкой о доходах' if has_cert else '❌ Без справки о доходах'}"
+
+                bank_buttons = []
+                for bank_name, info in shown:
+                    idx = BANK_KEYS.index(bank_name)
+                    bank_buttons.append([InlineKeyboardButton(
+                        text=f"💳 {bank_name}", callback_data=f"bank_calc_{idx}")])
+                extra = []
+                if found_stops:
+                    extra.append([InlineKeyboardButton(
+                        text="💡 Как улучшить кредитную историю", callback_data="improve_ci")])
+
+                await message.answer(
+                    short_report, parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=bank_buttons + extra + [
+                        [InlineKeyboardButton(text="📞 Связаться с менеджером", url=f"https://t.me/{MANAGER_TG.lstrip('@')}")]]))
+            else:
+                await message.answer(
+                    f"🏦 **Подобрано {cnt} {word} с лучшими условиями для вас.**\n\n"
+                    "Чтобы подобрать точнее, уточните данные 👇",
+                    parse_mode="Markdown",
+                    reply_markup=get_choice_keyboard(has_stop=bool(found_stops), with_refinance=False))
 
     try: os.remove(file_path)
     except: pass
@@ -1043,6 +1220,41 @@ async def handle_income_cert_after(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==============================
+# РЕФИНАНСИРОВАНИЕ — расчёт
+# ==============================
+@dp.callback_query(F.data == "calc_refinance")
+async def calc_refinance(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    cache = pdf_cache.get(uid)
+    if not cache:
+        await callback.answer("Данные устарели. Загрузите PDF заново.", show_alert=True)
+        return
+
+    loans = cache["loans"]
+    anketa = user_calc.get(uid, {})
+    score_val = cache.get("score_val")
+
+    report, status = build_refinance_report(uid, loans, anketa, score_val)
+
+    if status == "no_banks" or not report:
+        await callback.message.edit_text(
+            build_no_banks_message(),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📞 Связаться с менеджером", url=f"https://t.me/{MANAGER_TG.lstrip('@')}")],
+                [InlineKeyboardButton(text="📋 Показать доступные банки", callback_data="show_banks")]]))
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        report,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📞 Связаться с менеджером", url=f"https://t.me/{MANAGER_TG.lstrip('@')}")],
+            [InlineKeyboardButton(text="📋 Показать доступные банки", callback_data="show_banks")]]))
+    await callback.answer()
+
+# ==============================
 # ИНСТРУКЦИИ
 # ==============================
 @dp.callback_query(F.data == "how_to_get_pdf")
@@ -1075,8 +1287,7 @@ async def btn_refinance_info(message: types.Message):
         "• ✅ Один платёж вместо 3–5 — удобнее\n"
         "• ✅ Обычно меньше ежемесячный платёж\n"
         "• ✅ Можно выбрать банк с лучшей ставкой\n"
-        "• ✅ Освобождается часть платёжного уровня — "
-        "появляется пространство для нового кредита\n\n"
+        "• ✅ Освобождается часть платёжного уровня\n\n"
         "**Пример:**\n"
         "У вас 3 кредита: 400 + 300 + 250 = 950 BYN/мес.\n"
         "После рефинансирования: 1 кредит на 8 000 BYN "
