@@ -14,7 +14,7 @@ import pdfplumber
 # ==============================
 # НАСТРОЙКИ
 # ==============================
-BOT_TOKEN = "8840577896:AAGygFrEWsRptHxu0BJoA7HteoxDmgKWDmU"
+BOT_TOKEN = "Ваш Токен"
 MANAGER_TG = "@Tarnished97"
 
 logging.basicConfig(level=logging.INFO)
